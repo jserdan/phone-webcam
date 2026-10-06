@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phone Cam to OBS - Setup & Control Hub</title>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        body {
+            background-color: #0b0f19;
+            color: #f1f5f9;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 30px 20px;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 900px;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding-bottom: 16px;
+            border-bottom: 1px solid #1e293b;
+        }
+        .title {
+            font-size: 24px;
+            font-weight: 700;
+            color: #38bdf8;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .status-pill {
+            padding: 6px 14px;
+            border-radius: 9999px;
+            font-size: 13px;
+            font-weight: 600;
+            background: #1e293b;
+            color: #94a3b8;
+            border: 1px solid #334155;
+        }
+        .status-pill.online {
+            background: rgba(16, 185, 129, 0.2);
+            color: #34d399;
+            border-color: #059669;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        .card {
+            background: #131b2e;
+            border: 1px solid #1e293b;
+            border-radius: 12px;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .card h3 {
+            font-size: 18px;
+            color: #f8fafc;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .qr-wrapper {
+            background: #fff;
+            padding: 16px;
+            border-radius: 12px;
+            display: inline-block;
+            align-self: center;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        }
+        canvas {
+            display: block;
+        }
+        .url-box {
+            background: #090d16;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #243049;
+            font-family: monospace;
+            font-size: 13px;
+            word-break: break-all;
+            color: #38bdf8;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .copy-btn {
+            background: #1e293b;
+            border: 1px solid #475569;
+            color: #cbd5e1;
+            padding: 6px 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            margin-left: 8px;
+            white-space: nowrap;
+        }
+        .copy-btn:hover {
+            background: #334155;
+            color: white;
+        }
+        ol {
+            padding-left: 20px;
+            font-size: 14px;
+            line-height: 1.7;
+            color: #cbd5e1;
+        }
+        li strong {
+            color: #f8fafc;
+        }
+        .preview-box {
+            position: relative;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            width: 100%;
+            height: 220px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .preview-box video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .alert-box {
+            background: rgba(245, 158, 11, 0.1);
+            border-left: 4px solid #f59e0b;
+            padding: 12px;
+            border-radius: 4px;
+            font-size: 13px;
+            color: #fde68a;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="title">
+                <span>📹</span> Android Phone WebRTC Camera Hub
+            </div>
+            <div id="connStatus" class="status-pill">Waiting for phone...</div>
+        </div>
+
+        <div class="grid">
+            <!-- Step 1: Phone Pairing -->
+            <div class="card">
+                <h3><span>📱</span> 1. Connect Phone (Android Chrome)</h3>
+                <p style="font-size: 13px; color: #94a3b8;">
+                    Make sure both your PC and phone are on the <strong>same Wi-Fi / Local Network</strong>.
+                </p>
+                <div class="qr-wrapper">
+                    <canvas id="qrCode"></canvas>
+                </div>
+                <div class="url-box">
+                    <span id="phoneUrlText">Loading...</span>
+                    <button class="copy-btn" onclick="copyUrl('phoneUrlText')">Copy</button>
+                </div>
+                <div class="alert-box">
+                    ⚠️ <strong>SSL Warning on Android:</strong> Chrome requires HTTPS for camera access. Because this is a local LAN IP, tap <strong>"Advanced" &rarr; "Proceed to (unsafe)"</strong> once. Then allow camera permissions!
+                </div>
+            </div>
+
+            <!-- Step 2: OBS Integration -->
+            <div class="card">
+                <h3><span>🎬</span> 2. Add into OBS Studio</h3>
+                <ol>
+                    <li>Open <strong>OBS Studio</strong> on your PC.</li>
+                    <li>Under <strong>Sources</strong>, click <strong>+ &rarr; Browser</strong>.</li>
+                    <li>Name it <code>Phone Camera</code>.</li>
+                    <li>Set the <strong>URL</strong> to:</li>
+                </ol>
+                <div class="url-box">
+                    <span id="obsUrlText">http://localhost:8000/obs.html</span>
+                    <button class="copy-btn" onclick="copyUrl('obsUrlText')">Copy</button>
+                </div>
+                <ol start="5">
+                    <li>Set <strong>Width</strong> to <code>1920</code> and <strong>Height</strong> to <code>1080</code> (or <code>1280x720</code>).</li>
+                    <li>Check <strong>"Shutdown source when not visible"</strong> (optional).</li>
+                    <li>Click <strong>OK</strong>.</li>
+                    <li>In OBS Controls, click <strong>"Start Virtual Camera"</strong>! Now Zoom, Teams, Discord or any app can use your phone camera.</li>
+                </ol>
+            </div>
+        </div>
+
+        <!-- Live PC Preview -->
+        <div class="card">
+            <h3><span>👀</span> Live Feed Monitor (PC Preview)</h3>
+            <div class="preview-box">
+                <video id="previewVideo" autoplay playsinline muted></video>
+                <div id="noSignal" style="position: absolute; color: #64748b; font-size: 14px;">No stream active yet</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const localHost = location.hostname;
+        const phoneUrl = `https://${localHost}:8443/camera.html`;
+        const obsUrl = `http://${localHost}:8000/obs.html`;
+
+        document.getElementById('phoneUrlText').innerText = phoneUrl;
+        document.getElementById('obsUrlText').innerText = obsUrl;
+
+        // Render QR Code
+        QRCode.toCanvas(document.getElementById('qrCode'), phoneUrl, {
+            width: 180,
+            margin: 1,
+            color: { dark: '#0b0f19', light: '#ffffff' }
+        });
+
+        function copyUrl(elementId) {
+            const text = document.getElementById(elementId).innerText;
+            navigator.clipboard.writeText(text).then(() => {
+                alert('Copied to clipboard: ' + text);
+            });
+        }
+
+        // WebRTC Receiver Preview
+        const previewVideo = document.getElementById('previewVideo');
+        const connStatus = document.getElementById('connStatus');
+        const noSignal = document.getElementById('noSignal');
+
+        let ws = null;
+        let pc = null;
+        const rtcConfig = {
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        };
+
+        function connect() {
+            ws = new WebSocket(`ws://${location.host}`);
+            ws.onopen = () => {
+                ws.send(JSON.stringify({ type: 'register', role: 'receiver' }));
+                ws.send(JSON.stringify({ type: 'request_offer' }));
+            };
+
+            ws.onmessage = async (e) => {
+                const data = JSON.parse(e.data);
+                if (data.type === 'offer') {
+                    if (pc) pc.close();
+                    pc = new RTCPeerConnection(rtcConfig);
+                    pc.ontrack = (ev) => {
+                        if (ev.streams && ev.streams[0]) {
+                            previewVideo.srcObject = ev.streams[0];
+                            noSignal.style.display = 'none';
+                            connStatus.className = 'status-pill online';
+                            connStatus.innerText = '● Phone Connected & Streaming';
+                        }
+                    };
+                    pc.onicecandidate = (ev) => {
+                        if (ev.candidate) ws.send(JSON.stringify({ type: 'candidate', candidate: ev.candidate }));
+                    };
+                    await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                    const ans = await pc.createAnswer();
+                    await pc.setLocalDescription(ans);
+                    ws.send(JSON.stringify({ type: 'answer', sdp: pc.localDescription }));
+                } else if (data.type === 'candidate' && pc) {
+                    pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(() => {});
+                } else if (data.type === 'sender_ready') {
+                    ws.send(JSON.stringify({ type: 'request_offer' }));
+                } else if (data.type === 'sender_disconnected') {
+                    connStatus.className = 'status-pill';
+                    connStatus.innerText = 'Waiting for phone...';
+                    noSignal.style.display = 'block';
+                }
+            };
+
+            ws.onclose = () => {
+                setTimeout(connect, 2000);
+            };
+        }
+
+        connect();
+    </script>
+</body>
+</html>

@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Phone Camera Streamer</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        body {
+            background-color: #0f172a;
+            color: #f8fafc;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        .header {
+            padding: 14px 16px;
+            background: #1e293b;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #334155;
+        }
+        .badge {
+            font-size: 12px;
+            padding: 4px 10px;
+            border-radius: 9999px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .badge.disconnected { background: #ef4444; color: #fff; }
+        .badge.connected { background: #10b981; color: #fff; }
+        .badge.streaming { background: #06b6d4; color: #fff; animation: pulse 2s infinite; }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .preview-container {
+            position: relative;
+            flex: 1;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 280px;
+        }
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            max-height: 70vh;
+        }
+        .overlay-stats {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            color: #38bdf8;
+            font-family: monospace;
+            pointer-events: none;
+        }
+        .controls {
+            padding: 16px;
+            background: #1e293b;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            border-top: 1px solid #334155;
+        }
+        .row {
+            display: flex;
+            gap: 10px;
+        }
+        .btn {
+            flex: 1;
+            padding: 12px 14px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+        .btn-primary { background: #3b82f6; color: #fff; }
+        .btn-primary:active { background: #2563eb; }
+        .btn-secondary { background: #334155; color: #e2e8f0; }
+        .btn-danger { background: #ef4444; color: white; }
+
+        select {
+            width: 100%;
+            padding: 10px;
+            background: #0f172a;
+            border: 1px solid #475569;
+            color: #f8fafc;
+            border-radius: 8px;
+            font-size: 14px;
+            outline: none;
+        }
+        .hint {
+            font-size: 12px;
+            color: #94a3b8;
+            line-height: 1.4;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div style="font-weight: 700; font-size: 16px;">📱 Phone Camera</div>
+        <div id="statusBadge" class="badge disconnected">Disconnected</div>
+    </div>
+
+    <div class="preview-container">
+        <video id="localVideo" autoplay playsinline muted></video>
+        <div id="stats" class="overlay-stats">Waiting for camera...</div>
+    </div>
+
+    <div class="controls">
+        <div class="row">
+            <select id="cameraSelect">
+                <option value="">Selecting cameras...</option>
+            </select>
+        </div>
+        <div class="row">
+            <select id="resSelect">
+                <option value="1080p">1080p (1920x1080 - High Quality)</option>
+                <option value="720p" selected>720p (1280x720 - Low Latency Recommended)</option>
+                <option value="480p">480p (854x480 - Ultra Fast)</option>
+            </select>
+            <select id="fpsSelect">
+                <option value="60">60 FPS</option>
+                <option value="30" selected>30 FPS</option>
+            </select>
+        </div>
+        <div class="row">
+            <button id="startBtn" class="btn btn-primary" onclick="initMedia()">🎥 Enable Camera</button>
+            <button id="switchBtn" class="btn btn-secondary" onclick="switchCamera()">🔄 Flip Camera</button>
+        </div>
+        <div class="row">
+            <button id="torchBtn" class="btn btn-secondary" onclick="toggleTorch()">💡 Flashlight</button>
+            <button id="wakelockBtn" class="btn btn-secondary" onclick="requestWakeLock()">🔋 Keep Screen On</button>
+        </div>
+        <p class="hint">Keep this tab active on Chrome Android. Streaming with ultra-low latency WebRTC directly to your PC's OBS.</p>
+    </div>
+
+    <script>
+        let localStream = null;
+        let peerConnection = null;
+        let ws = null;
+        let currentFacingMode = 'environment'; // back camera by default
+        let videoTrack = null;
+        let wakeLock = null;
+        let isTorchOn = false;
+
+        const statusBadge = document.getElementById('statusBadge');
+        const statsEl = document.getElementById('stats');
+        const cameraSelect = document.getElementById('cameraSelect');
+        const resSelect = document.getElementById('resSelect');
+        const fpsSelect = document.getElementById('fpsSelect');
+        const localVideo = document.getElementById('localVideo');
+
+        const resolutions = {
+            '1080p': { width: { ideal: 1920 }, height: { ideal: 1080 } },
+            '720p':  { width: { ideal: 1280 }, height: { ideal: 720 } },
+            '480p':  { width: { ideal: 854 },  height: { ideal: 480 } }
+        };
+
+        const rtcConfig = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ],
+            sdpSemantics: 'unified-plan'
+        };
+
+        async function requestWakeLock() {
+            try {
+                if ('wakeLock' in navigator) {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    alert('Screen lock active! Screen will stay on.');
+                }
+            } catch (err) {
+                console.warn('Wake Lock error:', err);
+            }
+        }
+
+        async function initMedia(deviceId = null) {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+            }
+
+            const res = resolutions[resSelect.value] || resolutions['720p'];
+            const fps = parseInt(fpsSelect.value) || 30;
+
+            const videoConstraints = {
+                ...res,
+                frameRate: { ideal: fps, max: fps }
+            };
+
+            if (deviceId) {
+                videoConstraints.deviceId = { exact: deviceId };
+            } else {
+                videoConstraints.facingMode = { ideal: currentFacingMode };
+            }
+
+            try {
+                statsEl.innerText = 'Requesting camera permission...';
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    video: videoConstraints,
+                    audio: false // Can be set to true if mic is needed
+                });
+
+                localVideo.srcObject = localStream;
+                videoTrack = localStream.getVideoTracks()[0];
+                const settings = videoTrack.getSettings();
+                statsEl.innerText = `${settings.width}x${settings.height} @ ${Math.round(settings.frameRate || fps)}fps`;
+                document.getElementById('startBtn').innerText = '✅ Camera Live';
+                document.getElementById('startBtn').classList.remove('btn-primary');
+                document.getElementById('startBtn').classList.add('btn-secondary');
+
+                // Enumerate devices if not already done
+                await listCameras();
+
+                // If peerConnection already exists, replace track
+                if (peerConnection) {
+                    const senders = peerConnection.getSenders();
+                    const vSender = senders.find(s => s.track && s.track.kind === 'video');
+                    if (vSender) {
+                        vSender.replaceTrack(videoTrack);
+                    } else {
+                        createPeerConnection();
+                    }
+                } else {
+                    createPeerConnection();
+                }
+
+                // Request keep screen on automatically
+                if ('wakeLock' in navigator && !wakeLock) {
+                    navigator.wakeLock.request('screen').then(wl => { wakeLock = wl; }).catch(() => {});
+                }
+
+            } catch (err) {
+                console.error('Camera access failed:', err);
+                statsEl.innerText = `Camera Error: ${err.name} - ${err.message}`;
+                alert('Could not start camera: ' + err.message);
+            }
+        }
+
+        async function listCameras() {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoInputs = devices.filter(d => d.kind === 'videoinput');
+                cameraSelect.innerHTML = '';
+                videoInputs.forEach((device, idx) => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.text = device.label || `Camera ${idx + 1}`;
+                    cameraSelect.appendChild(option);
+                });
+            } catch (e) {
+                console.warn('Listing devices failed', e);
+            }
+        }
+
+        cameraSelect.onchange = () => {
+            if (cameraSelect.value) {
+                initMedia(cameraSelect.value);
+            }
+        };
+
+        resSelect.onchange = () => initMedia();
+        fpsSelect.onchange = () => initMedia();
+
+        function switchCamera() {
+            currentFacingMode = (currentFacingMode === 'environment') ? 'user' : 'environment';
+            initMedia();
+        }
+
+        async function toggleTorch() {
+            if (!videoTrack) return;
+            const capabilities = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
+            if (!capabilities.torch) {
+                alert('Flashlight/Torch is not supported on this camera lens.');
+                return;
+            }
+            try {
+                isTorchOn = !isTorchOn;
+                await videoTrack.applyConstraints({
+                    advanced: [{ torch: isTorchOn }]
+                });
+                document.getElementById('torchBtn').innerText = isTorchOn ? '🔦 Flashlight [ON]' : '💡 Flashlight';
+            } catch (e) {
+                alert('Failed to toggle torch: ' + e.message);
+            }
+        }
+
+        // --- WebRTC Signaling ---
+        function connectSignaling() {
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${location.host}`;
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                statusBadge.className = 'badge connected';
+                statusBadge.innerText = 'Connected to PC';
+                ws.send(JSON.stringify({ type: 'register', role: 'sender' }));
+            };
+
+            ws.onmessage = async (event) => {
+                const data = JSON.parse(event.data);
+
+                if (data.type === 'answer') {
+                    if (peerConnection) {
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                    }
+                } else if (data.type === 'candidate') {
+                    if (peerConnection && data.candidate) {
+                        try {
+                            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                        } catch (e) {
+                            console.error('Error adding ICE candidate', e);
+                        }
+                    }
+                } else if (data.type === 'request_offer') {
+                    createPeerConnection();
+                }
+            };
+
+            ws.onclose = () => {
+                statusBadge.className = 'badge disconnected';
+                statusBadge.innerText = 'Disconnected';
+                setTimeout(connectSignaling, 2000);
+            };
+        }
+
+        function createPeerConnection() {
+            if (!localStream) return;
+
+            if (peerConnection) {
+                peerConnection.close();
+            }
+
+            peerConnection = new RTCPeerConnection(rtcConfig);
+
+            localStream.getTracks().forEach(track => {
+                const sender = peerConnection.addTrack(track, localStream);
+                // Ultra-low latency video tuning
+                const params = sender.getParameters();
+                if (!params.encodings) params.encodings = [{}];
+                params.encodings[0].maxBitrate = 4000000; // 4 Mbps
+                params.encodings[0].priority = 'high';
+                sender.setParameters(params).catch(() => {});
+            });
+
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'candidate', candidate: event.candidate }));
+                }
+            };
+
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log('ICE Connection State:', peerConnection.iceConnectionState);
+                if (peerConnection.iceConnectionState === 'connected') {
+                    statusBadge.className = 'badge streaming';
+                    statusBadge.innerText = 'Streaming to OBS';
+                }
+            };
+
+            // Create Offer
+            peerConnection.createOffer({
+                offerToReceiveAudio: false,
+                offerToReceiveVideo: false
+            }).then(offer => {
+                // Low latency SDP tuning
+                let sdp = offer.sdp;
+                // Force stereo=0, latency tuning if audio present
+                return peerConnection.setLocalDescription(offer);
+            }).then(() => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'offer',
+                        sdp: peerConnection.localDescription
+                    }));
+                }
+            }).catch(err => console.error('Create offer error:', err));
+        }
+
+        // Auto start
+        connectSignaling();
+    </script>
+</body>
+</html>

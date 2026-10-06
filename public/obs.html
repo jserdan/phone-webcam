@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>OBS Browser Source - Phone Stream</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: transparent;
+        }
+        body, html {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+        }
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover; /* Fill frame cleanly without black bars */
+            display: block;
+        }
+        #placeholder {
+            position: absolute;
+            color: #64748b;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-size: 20px;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: 100%;
+            background: #0b0f19;
+            z-index: 10;
+            transition: opacity 0.3s ease;
+        }
+        .spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-top: 3px solid #38bdf8;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div id="placeholder">
+        <div class="spinner"></div>
+        <div id="statusText">Waiting for Phone Stream...</div>
+    </div>
+    <video id="remoteVideo" autoplay playsinline muted></video>
+
+    <script>
+        const remoteVideo = document.getElementById('remoteVideo');
+        const placeholder = document.getElementById('placeholder');
+        const statusText = document.getElementById('statusText');
+
+        let peerConnection = null;
+        let ws = null;
+
+        const rtcConfig = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ],
+            sdpSemantics: 'unified-plan'
+        };
+
+        function connectSignaling() {
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${location.host}`;
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                statusText.innerText = 'Connected to Local Server. Waiting for Phone...';
+                ws.send(JSON.stringify({ type: 'register', role: 'receiver' }));
+                // Ask sender to send offer if it is already online
+                ws.send(JSON.stringify({ type: 'request_offer' }));
+            };
+
+            ws.onmessage = async (event) => {
+                const data = JSON.parse(event.data);
+
+                if (data.type === 'offer') {
+                    handleOffer(data.sdp);
+                } else if (data.type === 'candidate') {
+                    if (peerConnection && data.candidate) {
+                        try {
+                            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                        } catch (e) {
+                            console.error('Candidate error', e);
+                        }
+                    }
+                } else if (data.type === 'sender_ready') {
+                    statusText.innerText = 'Phone detected, establishing connection...';
+                    ws.send(JSON.stringify({ type: 'request_offer' }));
+                } else if (data.type === 'sender_disconnected') {
+                    statusText.innerText = 'Phone disconnected. Waiting to reconnect...';
+                    placeholder.style.display = 'flex';
+                    placeholder.style.opacity = '1';
+                }
+            };
+
+            ws.onclose = () => {
+                statusText.innerText = 'Signaling disconnected. Retrying...';
+                placeholder.style.display = 'flex';
+                placeholder.style.opacity = '1';
+                setTimeout(connectSignaling, 2000);
+            };
+        }
+
+        async function handleOffer(sdp) {
+            if (peerConnection) {
+                peerConnection.close();
+            }
+
+            peerConnection = new RTCPeerConnection(rtcConfig);
+
+            peerConnection.ontrack = (event) => {
+                if (event.streams && event.streams[0]) {
+                    remoteVideo.srcObject = event.streams[0];
+                    placeholder.style.opacity = '0';
+                    setTimeout(() => {
+                        placeholder.style.display = 'none';
+                    }, 300);
+                }
+            };
+
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'candidate', candidate: event.candidate }));
+                }
+            };
+
+            peerConnection.onconnectionstatechange = () => {
+                console.log('Receiver State:', peerConnection.connectionState);
+                if (peerConnection.connectionState === 'disconnected' || 
+                    peerConnection.connectionState === 'failed') {
+                    placeholder.style.display = 'flex';
+                    placeholder.style.opacity = '1';
+                    statusText.innerText = 'Stream interrupted. Reconnecting...';
+                }
+            };
+
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'answer',
+                    sdp: peerConnection.localDescription
+                }));
+            }
+        }
+
+        connectSignaling();
+    </script>
+</body>
+</html>
